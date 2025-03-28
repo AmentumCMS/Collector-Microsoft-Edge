@@ -1,0 +1,13 @@
+# Ignore .vagrant
+.vagrant*
+
+# Ignore subdirectories
+!.github/
+!rabbitmq-messaging-topology-operator/
+!rabbitmq-cluster-operator/
+!rabbitmq-ib/
+
+# Ignore Files
+*.tgz
+*.zip
+*.bundle

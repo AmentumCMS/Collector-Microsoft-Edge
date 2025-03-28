@@ -1,0 +1,349 @@
+name: Microsoft Edge Collector
+run-name: ${{ github.actor }} is Collecting 🚀
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  Date:
+    runs-on: ubuntu-24.04
+    outputs:
+      Date: ${{ steps.date.outputs.date }}
+    steps:
+      - name: Get current date
+        id: DATE
+        run: |
+          echo "Setting Date"
+          echo "DATE=$(date '+%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+          echo -e "\nWrote to file:\n$GITHUB_OUTPUT\n"
+          echo "Values:"
+          cat $GITHUB_OUTPUT
+
+  Collect-RPMs:
+    needs: [Date]
+    runs-on: ubuntu-24.04
+    strategy:
+        matrix:
+            os: [8, 9]
+            repo: [microsoft-edge]
+    container:
+      image: docker.io/redhat/ubi${{ matrix.os }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+        WORKDIR: /mnt
+      volumes:
+        - /mnt:/mnt
+      # credentials:
+      #   username: ${{ secrets.REGISTRY_USER }}
+      #   password: ${{ secrets.REGISTRY_TOKEN }}
+      # ports:
+      #   - 80
+
+    steps:
+      - name: Check for dockerenv file
+        run: (ls /.dockerenv && echo Found dockerenv) || (echo No dockerenv)
+      
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Setup Environment
+        run: |
+          echo "PATH=$PATH:$PWD/scripts" >> $GITHUB_ENV
+          echo "WORKDIR=/mnt" >> $GITHUB_ENV
+
+      - name: Show Files
+        run: ls -Alht
+
+      - name: List disks
+        run: df -h ${{ env.WORKDIR }}
+
+      - name: Register system and install packages
+        run: registerubi.sh '${{ secrets.RHDN_USER }}' '${{ secrets.RHDN_PASS }}'
+
+      - name: Repo ${{ matrix.repo }} Info
+        run: |
+          echo -e "\nRepo ${{ matrix.repo }} Info:\n"
+          dnf -y repoinfo ${{ matrix.repo }} | tail -n +2
+
+      - name: Sync Repo
+        run: |
+          cd ${{ env.WORKDIR }}
+          echo "Collecting repo ${{ matrix.REPO }} RPMs"
+          reposync.sh ${{ matrix.REPO }}
+          echo "Logfile: $(ls -1Ssh *.log)"
+
+      - name: Show Consumption
+        run: |
+          cd ${{ env.WORKDIR }}
+          echo -e "Disk Usage:\n$(du -chs ${{ matrix.repo }})\n"
+          echo -e "\nDisk Space:\n$(df -h ${{ matrix.repo }})"
+
+      - name: Directory Contents
+        run: |
+          cd ${{ env.WORKDIR }}
+          echo -e "Directory Contents\n$(ls -1AhsS ${{ matrix.repo }}/*)"
+          echo -e "\n\nDirectory Size\n$(du -hd1 ${{ matrix.repo }})"
+
+      - name: ISO Table of contents
+        run: | 
+          cd ${{ env.WORKDIR }}
+          tree ${{ matrix.repo }} \
+            | tee ${{ matrix.repo }}/${{ matrix.repo }}-${{ matrix.os }}-${{ needs.Date.outputs.Date }}.iso.txt
+
+      - name: Upload ISO ToC artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.repo }}-${{ matrix.os }}-${{ needs.Date.outputs.Date }}.iso.txt
+          path: ${{ env.WORKDIR }}/${{ matrix.repo }}/${{ matrix.repo }}-${{ matrix.os }}-${{ needs.Date.outputs.Date }}.iso.txt
+          if-no-files-found: error
+  
+      - name: TARchive Output
+        run: |
+          cd ${{ env.WORKDIR }}
+          tar -cv -Ipigz --remove-files \
+            -f ${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz \
+            ${{ matrix.repo }} \
+            | tee ${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz.txt
+
+      - name: Generate Hash
+        run: |
+          cd ${{ env.WORKDIR }}
+          sha256sum -b ${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz  | tee \
+            ${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz.sha
+
+      - name: List files 
+        run: ls -1sSh ${{ env.WORKDIR }}/${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz*
+
+      - name: Upload TARchive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz
+          path: ${{ env.WORKDIR }}/${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz
+          if-no-files-found: error
+
+      - name: Upload TARchive SHA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz.sha
+          path: ${{ env.WORKDIR }}/${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz.sha
+          if-no-files-found: error
+
+      - name: Upload TARchive ToC
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz.txt
+          path: ${{ env.WORKDIR }}/${{ vars.COLLECTOR }}-${{ matrix.repo }}-${{ matrix.os }}-RPMS-${{ needs.Date.outputs.Date }}.tgz.txt
+          if-no-files-found: error
+
+  Code:
+    needs: [Date]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          lfs: true
+
+      - name: Setup Git
+        run: |
+          git config user.name "$(git log -n 1 --pretty=format:%an)"
+          git config user.email "$(git log -n 1 --pretty=format:%ae)"
+
+      - name: Update Submodules if needed
+        shell: bash
+        run: git submodule update --init --recursive --remote
+
+      - name: Bundle Repo1 code base for ${{ vars.COLLECTOR }}
+        run: |
+          git bundle create --progress ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.bundle --all
+          ls -sS1h *
+
+      - name: Generate Hash
+        run: |
+          sha256sum -b ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.bundle | tee \
+            ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.bundle.sha
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.bundle
+          path: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.bundle
+
+      - name: Upload bundle hash
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.bundle.sha
+          path: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.bundle.sha
+          if-no-files-found: error
+
+  MakeISO:
+    runs-on: ubuntu-24.04
+    needs: [Date, Code, Collect-RPMs]
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Install mkisofs
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y mkisofs isomd5sum wget
+
+      - name: Setup Environment
+        run: |
+          echo "PATH=$PATH:$PWD/scripts" >> $GITHUB_ENV
+          echo "WORKDIR=ISO" >> $GITHUB_ENV
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: ${{ env.WORKDIR }}
+
+      - name: Download Windows Binaries
+        run: |
+          mkdir -p ${{ env.WORKDIR }}/windows
+          cd ${{ env.WORKDIR }}/windows
+          getedge.sh
+          ls -1sSh
+
+      - name: Copy Markdowns to ${{ env.WORKDIR }}
+        run: cp -v *.md ${{ env.WORKDIR }}
+
+      - name: Show Artifacts
+        run: ls -1sSh ${{ env.WORKDIR }}/*
+
+      - name: Generate Artifact Hash File
+        run: |
+          cd ${{ env.WORKDIR }}
+          sha256sum -b * | tee \
+            ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.sha
+
+      - name: Upload Artifact Hash File
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.sha
+          path: ${{ env.WORKDIR }}/${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.sha
+
+      - name: ISO Table of contents
+        run: |
+          tree ${{ env.WORKDIR }} \
+            | tee ${{ env.WORKDIR }}/${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso.txt
+
+      - name: Upload ISO ToC artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso.txt
+          path: ${{ env.WORKDIR }}/${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso.txt
+          if-no-files-found: error
+
+      - name: Make ISO
+        run: |
+          mkisofs -J -R -v -T -l  \
+            -V '${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}' \
+            -A '${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}' \
+            -o ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso \
+            ${{ env.WORKDIR }}
+
+      - name: Implant MD5 sum into iso
+        run: implantisomd5 ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso
+
+      - name: Generate ISO Hash
+        run: |
+          sha256sum -b ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso | tee \
+            ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso.sha
+
+      - name: Show ISO & Hash
+        run: ls -sS1h *.iso*
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso
+          path: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso
+          if-no-files-found: error
+
+      - name: Upload ISO Hash
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso.sha
+          path: ${{ vars.COLLECTOR }}-${{ needs.Date.outputs.Date }}.iso.sha
+
+  Release:
+    runs-on: ubuntu-24.04
+    needs: [Date, MakeISO]
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Show Artifacts
+        run: ls -sS1ht ${{ vars.COLLECTOR }}*
+
+      # Section to create a tag and release
+      - name: Set up git
+        run: |
+          git config user.name "$(git log -n 1 --pretty=format:%an)"
+          git config user.email "$(git log -n 1 --pretty=format:%ae)"
+
+      - name: Create tag
+        uses: rickstaa/action-create-tag@v1
+        id: tag_create
+        with:
+          tag: ${{ needs.Date.outputs.Date }}
+          github_token: ${{secrets.GITHUB_TOKEN}}
+          tag_exists_error: false
+          message: "Release for ${{ needs.Date.outputs.Date }} run"
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ vars.COLLECTOR }} ${{ needs.Date.outputs.Date }}
+          tag_name: ${{ needs.Date.outputs.Date }}
+          make_latest: true
+          files: |
+            ${{ vars.COLLECTOR }}*
+
+  Sharepoint:
+    runs-on: ubuntu-24.04
+    needs: [Date, MakeISO]
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Show Artifacts
+        run: ls -sS1h ${{ vars.COLLECTOR }}*
+
+      # Send Files to Sharepoint
+      - name: Send Files to Sharepoint
+        uses: amentumcms/sharepoint-file-upload-action@pappasjfed-patch-1
+        with:
+          file_path: "${{ vars.COLLECTOR }}*"
+          host_name: ${{ secrets.SHAREPOINT_HOST }}
+          site_name: ${{ secrets.SHAREPOINT_SITE }}
+          upload_path: '${{ secrets.SHAREPOINT_BASEPATH }}/${{ vars.COLLECTOR }}/${{ needs.Date.outputs.Date }}'
+          tenant_id: ${{ secrets.SHAREPOINT_TENANT_ID }}
+          client_id: ${{ secrets.SHAREPOINT_APP_ID }}
+          client_secret: ${{ secrets.SHAREPOINT_APP_SECRET }}
+          login_endpoint: 'login.microsoftonline.us'
+          graph_endpoint: 'graph.microsoft.us'
